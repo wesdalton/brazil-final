@@ -738,6 +738,22 @@ body.running { --runner-h: 64px; }
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
 
+/* history */
+.hist-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.hist-metrics > div { display: flex; flex-direction: column; gap: 2px; }
+.hist-metrics b { font-size: 24px; line-height: 1.1; }
+.hist-metrics span { color: var(--muted); font-size: 13px; }
+.hist-filter { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.hist-feed { padding-top: 6px; }
+.hist-dhead { margin: 12px 0 4px; }
+.hist-row { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 14px; line-height: 1.4; }
+.hist-row .hist-t { color: var(--faint); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.hl-res { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 6px; margin-right: 4px; }
+.hl-res.good { background: color-mix(in srgb, var(--good, #16a34a) 18%, transparent); color: var(--good, #16a34a); }
+.hl-res.bad { background: color-mix(in srgb, var(--bad, #dc2626) 16%, transparent); color: var(--bad, #dc2626); }
+.hist-cards { margin-top: 10px; }
+#h-cards summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hist-day { line-height: 1.5; }
 @media print {
   :root, [data-theme="dark"] { --bg: #fff; --surface: #fff; --surface2: #f1f1f1; --text: #000; --muted: #333; --faint: #555; --border: #ccc; --accent: #0a6b40; }
   body { font-size: 10pt; background: #fff; }
@@ -889,8 +905,9 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
   C.flashcards.forEach(f => { if (f.ref) (CARDS_BY_REF[f.ref] = CARDS_BY_REF[f.ref] || []).push(f.id); });
   // ---------- state ----------
   const KEY = 'hist1475_study_v1';
+  const LOG_MAX = 20000;
   function defaultState() {
-    return { xp: 0, streak: { count: 0, last: null }, cards: {}, items: {}, best: {}, essays: {}, plan: {}, theme: null, fc: { week: 'all', tag: 'all', imp: 'all' }, tlZoom: 22 };
+    return { xp: 0, streak: { count: 0, last: null }, cards: {}, items: {}, best: {}, essays: {}, plan: {}, theme: null, fc: { week: 'all', tag: 'all', imp: 'all' }, tlZoom: 22, log: [], started: Date.now() };
   }
   function loadState() {
     try {
@@ -898,11 +915,43 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       const d = defaultState();
       const out = Object.assign(d, s && typeof s === 'object' ? s : {});
       ['streak', 'cards', 'items', 'best', 'essays', 'plan', 'fc'].forEach(k => { if (!out[k] || typeof out[k] !== 'object') out[k] = defaultState()[k]; });
+      if (!Array.isArray(out.log)) out.log = [];
       return out;
     } catch (e) { return defaultState(); }
   }
   let S = loadState();
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
+  let lastSaveOk = true;
+  function save() {
+    // On a full quota, drop the oldest half of the activity log and retry, so progress itself is never lost.
+    for (let i = 0; i < 6; i++) {
+      try { localStorage.setItem(KEY, JSON.stringify(S)); lastSaveOk = true; return true; }
+      catch (e) {
+        if (S.log && S.log.length > 100) S.log.splice(0, Math.ceil(S.log.length / 2));
+        else break;
+      }
+    }
+    lastSaveOk = false;
+    return false;
+  }
+  function logEvent(a, data) {
+    const e = Object.assign({ t: Date.now(), a }, data || {});
+    S.log.push(e);
+    if (S.log.length > LOG_MAX) S.log.splice(0, S.log.length - LOG_MAX);
+    save();
+    return e;
+  }
+  const logLater = (() => {
+    const timers = {};
+    return (key, a, data, ms) => { clearTimeout(timers[key]); timers[key] = setTimeout(() => { delete timers[key]; logEvent(a, typeof data === 'function' ? data() : data); }, ms || 1500); };
+  })();
+  let storagePersisted = null;
+  function requestPersistence() {
+    try {
+      if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persisted().then(p => p || navigator.storage.persist()).then(p => { storagePersisted = !!p; }).catch(() => { storagePersisted = false; });
+      }
+    } catch (e) { storagePersisted = false; }
+  }
 
   function touchStreak() {
     const t = today();
@@ -931,6 +980,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
   function markPlan(key) {
     const t = today();
     S.plan[t] = S.plan[t] || {};
+    if (!S.plan[t][key]) logEvent('plan_step', { step: key });
     S.plan[t][key] = true;
     // keep only the last two weeks of plan history
     Object.keys(S.plan).sort().slice(0, -14).forEach(k => delete S.plan[k]);
@@ -1241,6 +1291,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     if (!fromBack && !modal.hidden && modal.dataset.id && modal.dataset.id !== id) modalStack.push(modal.dataset.id);
     if (modal.hidden) modalStack.length = 0;
     modal.dataset.id = id;
+    logEvent('view', { id, via: page && page.name ? page.name : '' });
     $('#modal-body').innerHTML = itemBodyHTML(id);
     $('#modal-back').hidden = !modalStack.length;
     box.style.transform = '';
@@ -1315,7 +1366,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     ['home', 'Home', '#/'], ['flashcards', 'Flashcards', '#/flashcards'], ['timeline', 'Timeline', '#/timeline'],
     ['quiz', 'Who/What?', '#/quiz'], ['match', 'Matching', '#/match'], ['quotes', 'Quote detective', '#/quotes'],
     ['sources', 'Sources', '#/sources'], ['themes', 'Themes', '#/themes'], ['essay', 'Essay gym', '#/essay'],
-    ['cram', 'Cram sheet', '#/cram'], ['search', 'Search', '#/search'], ['games', 'Games', '#/games'], ['learn', 'Learn', '#/learn']
+    ['cram', 'Cram sheet', '#/cram'], ['history', 'History', '#/history'], ['search', 'Search', '#/search'], ['games', 'Games', '#/games'], ['learn', 'Learn', '#/learn']
   ];
   const BOTTOM = [['home', 'Home', '#/', 'home'], ['cards', 'Cards', '#/flashcards', 'cards'], ['games', 'Games', '#/games', 'game'], ['learn', 'Learn', '#/learn', 'book'], ['essay', 'Essay', '#/essay', 'pen']];
   function bottomKey(name, rest) {
@@ -1343,6 +1394,8 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     const { name, rest, params } = parseHash();
     const key = ROUTES[name] ? name : 'home';
     const fn = ROUTES[key];
+    page.name = key;
+    if (key !== 'search') logEvent('nav', { to: location.hash || '#/' });
     $$('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.key === key));
     const active = $(`#tabs a[data-key="${key}"]`);
     if (active && active.scrollIntoView && !isNarrow()) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -1392,6 +1445,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     let idx = steps.findIndex(s => !done[s.key]);
     if (idx < 0) idx = 0;
     planRun = { steps, idx, state: 'doing', timer: null, stay: false };
+    logEvent('plan_start', { from: steps[idx] && steps[idx].key });
     goStep();
   }
   function goStep() {
@@ -1401,7 +1455,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     if (location.hash === s.go) route(); else location.hash = s.go;
   }
   function stopPlan() {
-    if (planRun) clearTimeout(planRun.timer);
+    if (planRun) { clearTimeout(planRun.timer); logEvent('plan_stop'); }
     planRun = null;
     renderRunner();
   }
@@ -1460,7 +1514,8 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     ['#/themes', 'link', 'Themes and connections', 'Big claims, evidence, and continuities.'],
     ['#/essay', 'pen', 'Essay gym', 'Five-minute outlines and thesis practice.'],
     ['#/cram', 'print', 'Cram sheet', 'One printable page of must-knows.'],
-    ['#/search', 'search', 'Search', 'Find anything in the study data.']
+    ['#/search', 'search', 'Search', 'Find anything in the study data.'],
+    ['#/history', 'calendar', 'Your history', 'Every card, answer, and edit, saved as you go.']
   ];
   const tileHTML = ([href, ic, t, d, extra]) => `<a class="tile" href="${href}"><span class="ic">${ICON[ic]}</span><span class="tile-txt"><b>${esc(t)}</b><span>${esc(d)}</span>${extra ? `<em class="tile-extra">${esc(extra)}</em>` : ''}</span></a>`;
   function renderHome(root) {
@@ -1509,12 +1564,13 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       <h2>Settings</h2>
       <div class="card stack">
         <div class="row between"><span class="field" style="margin:0">Theme</span><div class="seg" id="theme-seg">${[['system', 'System'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button type="button" data-theme-set="${k}" class="${curTheme === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-        <div class="row between"><span class="muted small" style="flex:1;min-width:200px">Progress is saved in this browser only. Resetting clears XP, streak, flashcard boxes, and saved outlines.</span><button class="btn danger sm" id="reset" type="button">Reset progress</button></div>
+        <div class="row between"><span class="muted small" style="flex:1;min-width:200px">Every card grade, answer, and edit is saved on this device as you go.</span><a class="btn sm" href="#/history">Open history</a></div>
+        <div class="row between"><span class="muted small" style="flex:1;min-width:200px">Progress is saved on this device after every action. Resetting clears XP, streak, flashcard boxes, and saved outlines; your activity history stays.</span><button class="btn danger sm" id="reset" type="button">Reset progress</button></div>
       </div>`;
     $('#start-plan', root).addEventListener('click', startPlan);
     $$('[data-theme-set]', root).forEach(b => b.addEventListener('click', () => {
       S.theme = b.dataset.themeSet === 'system' ? null : b.dataset.themeSet;
-      save();
+      logEvent('setting', { name: 'theme', value: b.dataset.themeSet });
       applyTheme();
       $$('[data-theme-set]', root).forEach(x => x.classList.toggle('on', x === b));
     }));
@@ -1527,11 +1583,13 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
         return;
       }
       clearTimeout(t);
-      const theme = S.theme;
+      const theme = S.theme, log = S.log, started = S.started;
       try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
       S = defaultState();
       S.theme = theme;
-      save();
+      S.log = log;
+      S.started = started;
+      logEvent('reset');
       stopPlan();
       updateHud();
       toast('Progress reset');
@@ -1561,7 +1619,8 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       ['#/sources', 'book', 'Sources', 'Every reading and film: argument, quotes, pages.'],
       ['#/themes', 'link', 'Themes and connections', 'Big claims, evidence, and continuities.'],
       ['#/cram', 'print', 'Cram sheet', 'One printable page of must-knows.'],
-      ['#/search', 'search', 'Search', 'Find anything in the study data.']
+      ['#/search', 'search', 'Search', 'Find anything in the study data.'],
+      ['#/history', 'calendar', 'Your history', 'Every card, answer, and edit you have made.']
     ]);
   }
   // ---------- flashcards ----------
@@ -1653,6 +1712,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     function flip() {
       if (!queue.length || busy) return;
       flipped = !flipped;
+      logEvent('flip', { id: queue[0].id, side: flipped ? 'back' : 'front' });
       $('#flip', stage).classList.toggle('on', flipped);
       drawActions();
     }
@@ -1711,11 +1771,15 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       if (!queue.length || !flipped || (busy && !fromSwipe)) return;
       const f = queue.shift();
       const st = S.cards[f.id] || { box: 0, due: 0, seen: 0, lapses: 0 };
+      const fromBox = st.box || 0;
+      st[g] = (st[g] || 0) + 1;
+      st.last = Date.now();
       if (g === 'again') { st.box = 0; st.lapses = (st.lapses || 0) + 1; agains++; }
       else st.box = Math.min(5, (st.box || 0) + (g === 'easy' ? 2 : 1));
       st.due = Date.now() + INTERVALS[st.box];
       st.seen = (st.seen || 0) + 1;
       S.cards[f.id] = st;
+      logEvent('grade', { id: f.id, g, from: fromBox, to: st.box, how: fromSwipe ? 'swipe' : 'button' });
       if (g === 'again') queue.splice(Math.min(3, queue.length), 0, f);
       reviewed++;
       buzz(g === 'again' ? 'bad' : 'good');
@@ -1736,14 +1800,14 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
         <p class="muted">${anyCards ? (reviewed ? `You pressed "again" ${plural(agains, 'time')}.` : 'Nothing is due in this filter right now.') : 'No cards match these filters.'}</p>
         <div class="row" style="justify-content:center">${anyCards ? '<button class="btn primary" id="cram" type="button">Keep going (weakest first)</button>' : ''}<a class="btn" href="#/">Back to plan</a></div></div>`;
       const c = $('#cram', stage);
-      if (c) c.addEventListener('click', () => { reviewed = 0; agains = 0; start(true); });
+      if (c) c.addEventListener('click', () => { logEvent('cards_keep_going'); reviewed = 0; agains = 0; start(true); });
     }
     $('#fc-ftoggle', root).addEventListener('click', e => {
       const p = $('#fc-filters', root);
       p.hidden = !p.hidden;
       e.currentTarget.setAttribute('aria-expanded', String(!p.hidden));
     });
-    ['week', 'tag', 'imp'].forEach(k => $('#f-' + k, root).addEventListener('change', e => { F[k] = e.target.value; save(); reviewed = 0; agains = 0; start(false); }));
+    ['week', 'tag', 'imp'].forEach(k => $('#f-' + k, root).addEventListener('change', e => { F[k] = e.target.value; logEvent('setting', { name: 'card_filter_' + k, value: e.target.value }); reviewed = 0; agains = 0; start(false); }));
     page.onKey = e => {
       if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (queue.length) flip(); }
       else if (flipped && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); const g = { 1: 'again', 2: 'good', 3: 'easy' }[e.key]; grade(g, $(`[data-g="${g}"]`, stage)); }
@@ -1807,12 +1871,14 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       const row = ev.target.closest('[data-vev]'), head = ev.target.closest('[data-vera]');
       if (row) {
         const id = row.dataset.vev, li = row.parentElement, isOpen = open.has(id);
+        logEvent('timeline_expand', { id, open: !isOpen });
         if (isOpen) { open.delete(id); const d = $('.vt-detail', li); if (d) d.remove(); }
         else { open.add(id); row.insertAdjacentHTML('afterend', `<div class="vt-detail">${evMini(INDEX[id].item)}</div>`); }
         li.classList.toggle('open', !isOpen);
         row.setAttribute('aria-expanded', String(!isOpen));
       } else if (head && head.dataset.vera !== '_other') {
         const id = head.dataset.vera, isOpen = open.has(id);
+        logEvent('timeline_expand', { id, open: !isOpen });
         if (isOpen) { open.delete(id); const d = head.nextElementSibling; if (d && d.classList.contains('vt-era-detail')) d.remove(); }
         else { open.add(id); head.insertAdjacentHTML('afterend', `<div class="vt-detail vt-era-detail">${eraMini(INDEX[id].item)}</div>`); }
         head.classList.toggle('open', !isOpen);
@@ -1868,6 +1934,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     }
     function select(id, scroll) {
       selId = id;
+      logEvent('timeline_select', { id });
       $$('.tl-ev, .tl-band', inner).forEach(el => el.classList.toggle('sel', (el.dataset.ev || el.dataset.era) === id));
       detail.innerHTML = `<div class="card">${itemBodyHTML(id)}</div>`;
       if (scroll) {
@@ -1879,10 +1946,10 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       const ev = e.target.closest('[data-ev]'), era = e.target.closest('[data-era]');
       if (ev) select(ev.dataset.ev); else if (era) select(era.dataset.era);
     });
-    const zoom = f => { S.tlZoom = clamp((S.tlZoom || 22) * f, 8, 64); save(); const c = scroller.scrollLeft / Math.max(1, inner.scrollWidth); draw(); scroller.scrollLeft = c * inner.scrollWidth; };
+    const zoom = f => { S.tlZoom = clamp((S.tlZoom || 22) * f, 8, 64); logEvent('setting', { name: 'timeline_zoom', value: Math.round(S.tlZoom) }); const c = scroller.scrollLeft / Math.max(1, inner.scrollWidth); draw(); scroller.scrollLeft = c * inner.scrollWidth; };
     $('#zin', body).addEventListener('click', () => zoom(1.3));
     $('#zout', body).addEventListener('click', () => zoom(1 / 1.3));
-    $('#must', body).addEventListener('change', e => { mustOnly = e.target.checked; draw(); });
+    $('#must', body).addEventListener('change', e => { mustOnly = e.target.checked; logEvent('setting', { name: 'timeline_must_only', value: mustOnly }); draw(); });
     page.onKey = e => {
       if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
       e.preventDefault();
@@ -1956,7 +2023,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
         const i = +li.dataset.i;
         if (sel === -1) sel = i;
         else if (sel === i) sel = -1;
-        else { [items[sel], items[i]] = [items[i], items[sel]]; sel = -1; buzz(); }
+        else { logEvent('order_swap', { a2: items[sel].id, b: items[i].id }); [items[sel], items[i]] = [items[i], items[sel]]; sel = -1; buzz(); }
         draw();
       });
       $$('li', list).forEach(li => {
@@ -1975,6 +2042,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       items.forEach((e, i) => { const ok = sorted[i].id === e.id; if (ok) right++; recordItem(e.id, ok); });
       const perfect = right === items.length;
       DEBUG.lastOrder = { right, total: items.length, perfect };
+      logEvent('order', { ids: items.map(e => e.id), right, total: items.length });
       draw();
       buzz(perfect ? 'good' : 'bad');
       addXP(perfect ? 20 : right * 2, $('#o-next', body));
@@ -2045,6 +2113,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       total += pts;
       results.push({ e, diff, pts });
       recordItem(e.id, diff <= 2);
+      logEvent('year', { id: e.id, guess: val, ans: e.year, diff, pts });
       const verdict = diff === 0 ? 'Exactly right!' : diff <= 2 ? 'So close!' : diff <= 5 ? 'Close' : `Off by ${diff} years`;
       $('#y-val', body).innerHTML = `${val} <span style="font-size:.45em;color:var(--muted)">vs</span> <span style="color:var(--accent)">${e.year}</span>`;
       $('#y-range', body).disabled = true;
@@ -2061,6 +2130,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       const great = total >= max * 0.9;
       if (great) { celebrate(); addXP(20); }
       DEBUG.lastYear = { total, max };
+      logEvent('round', { game: 'year', score: total, max });
       body.innerHTML = `<div class="game"><div class="card result"><div class="kicker">Final score</div><div class="score">${total}<small> / ${max}</small></div>
         ${great ? '<div class="perfect">Time traveler</div>' : ''}
         <div style="text-align:left;margin:16px auto;max-width:520px">${results.map(r => `<div class="conn-row small"><b>${r.e.year}</b> ${esc(r.e.title)} <span class="muted">\u00b7 ${r.diff === 0 ? 'exact' : 'off by ' + r.diff} \u00b7 ${r.pts} pts</span></div>`).join('')}</div>
@@ -2119,6 +2189,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       btns.forEach((b, j) => { b.disabled = true; if (cur.opts[j].correct) b.classList.add('correct'); else if (j !== i) b.classList.add('dim'); });
       if (cur.itemId) recordItem(cur.itemId, ok);
       const right = cur.opts.find(o => o.correct);
+      logEvent(cfg.planKey === 'quotes' ? 'quote' : 'quiz', { id: cur.itemId || cur.key, ok, pick: cur.opts[i].label, ans: right ? right.label : '', retry: cur.tries });
       if (ok) {
         combo++; bestCombo = Math.max(bestCombo, combo); done++;
         if (!cur.tries) firstTry++;
@@ -2144,6 +2215,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       finished = true;
       const perfect = wrongs === 0 && total > 0;
       DEBUG.lastMC = { firstTry, total, wrongs, perfect };
+      logEvent('round', { game: cfg.planKey || 'quiz', score: firstTry, max: total, misses: wrongs });
       stage.innerHTML = `<div class="card result"><div class="kicker">Round complete</div>
         <div class="score">${firstTry}<small> / ${total} first try</small></div>
         ${perfect ? '<div class="perfect">Perfect round</div>' : ''}
@@ -2278,10 +2350,12 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
           const a = el('l', selL), b = el('r', selR);
           if (selL === selR) {
             matched.add(selL); recordItem(selL, true);
+            logEvent('match', { id: selL, ok: true, mode });
             [a, b].forEach(x => { x.classList.remove('sel'); x.classList.add('done'); x.disabled = true; });
             addXP(3, b);
           } else {
             mistakes++; penalty += 5000; recordItem(selL, false);
+            logEvent('match', { id: selL, picked: selR, ok: false, mode });
             [a, b].forEach(x => { x.classList.remove('sel'); x.classList.add('bad'); shake(x); setTimeout(() => x.classList.remove('bad'), 450); });
             tick();
           }
@@ -2295,7 +2369,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
         const t = Date.now() - start + penalty;
         const isBest = !best || t < best;
         if (isBest) S.best['match_' + mode] = t;
-        save();
+        logEvent('round', { game: 'match', mode, ms: t, misses: mistakes });
         markPlan('match');
         tick();
         DEBUG.lastMatch = { mistakes, time: t };
@@ -2441,15 +2515,16 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     }
     function wire() {
       const d = data();
-      $('#e-pick', body).addEventListener('change', e => { p = C.prompts.find(x => x.id === e.target.value) || p; revealed = false; draw(); });
-      $('#e-rand', body).addEventListener('click', () => { const others = C.prompts.filter(x => x.id !== p.id); p = others.length ? pick(others) : p; revealed = false; draw(); });
+      $('#e-pick', body).addEventListener('change', e => { p = C.prompts.find(x => x.id === e.target.value) || p; logEvent('essay_prompt', { prompt: p.id }); revealed = false; draw(); });
+      $('#e-rand', body).addEventListener('click', () => { const others = C.prompts.filter(x => x.id !== p.id); p = others.length ? pick(others) : p; logEvent('essay_prompt', { prompt: p.id, random: true }); revealed = false; draw(); });
       $('#e-start', body).addEventListener('click', toggleTimer);
-      $('#e-reset', body).addEventListener('click', () => { clearInterval(timer); timer = null; timeLeft = 300; draw(); });
-      $('#e-thesis', body).addEventListener('input', e => { d.thesis = e.target.value; autosize(e.target); save(); });
-      $$('[data-c]', body).forEach(t => t.addEventListener('input', e => { d.claims[+t.dataset.c].text = e.target.value; autosize(e.target); save(); }));
+      $('#e-reset', body).addEventListener('click', () => { logEvent('essay_timer', { prompt: p.id, action: 'reset', left: timeLeft }); clearInterval(timer); timer = null; timeLeft = 300; draw(); });
+      $('#e-thesis', body).addEventListener('input', e => { d.thesis = e.target.value; d.edited = Date.now(); autosize(e.target); save(); const pid = p.id; logLater('thesis_' + pid, 'essay_edit', () => ({ prompt: pid, field: 'thesis', text: d.thesis })); });
+      $$('[data-c]', body).forEach(t => t.addEventListener('input', e => { const ci = +t.dataset.c; d.claims[ci].text = e.target.value; d.edited = Date.now(); autosize(e.target); save(); const pid = p.id; logLater('claim_' + pid + ci, 'essay_edit', () => ({ prompt: pid, field: 'claim' + (ci + 1), text: d.claims[ci].text })); }));
       $$('[data-pf]', body).forEach(inp => inp.addEventListener('input', () => drawPicker(+inp.dataset.pf)));
       $('#e-reveal', body).addEventListener('click', () => {
         revealed = true;
+        logEvent('essay_compare', { prompt: p.id });
         reveal();
         addXP(10, $('#e-reveal', body));
         $('#e-reveal-box', body).scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
@@ -2461,15 +2536,16 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       const pk = e.target.closest('[data-pick]');
       if (pk) {
         const i = +pk.dataset.ci, id = pk.dataset.pick, c = data().claims[i];
-        c.ev = c.ev.includes(id) ? c.ev.filter(x => x !== id) : c.ev.concat(id);
-        save(); buzz(); refreshClaim(i);
+        const on = !c.ev.includes(id);
+        c.ev = on ? c.ev.concat(id) : c.ev.filter(x => x !== id);
+        logEvent('essay_evidence', { prompt: p.id, claim: i + 1, id, on }); buzz(); refreshClaim(i);
         return;
       }
       const rm = e.target.closest('[data-rm]');
       if (rm) {
         const i = +rm.dataset.ci, c = data().claims[i];
         c.ev = c.ev.filter(x => x !== rm.dataset.rm);
-        save(); refreshClaim(i);
+        logEvent('essay_evidence', { prompt: p.id, claim: i + 1, id: rm.dataset.rm, on: false }); refreshClaim(i);
         return;
       }
       const add = e.target.closest('[data-addev]');
@@ -2485,7 +2561,8 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     });
     function toggleTimer() {
       const btn = $('#e-start', body);
-      if (timer) { clearInterval(timer); timer = null; btn.textContent = 'Resume'; return; }
+      if (timer) { clearInterval(timer); timer = null; btn.textContent = 'Resume'; logEvent('essay_timer', { prompt: p.id, action: 'pause', left: timeLeft }); return; }
+      logEvent('essay_timer', { prompt: p.id, action: timeLeft < 300 && timeLeft > 0 ? 'resume' : 'start', left: timeLeft });
       if (timeLeft <= 0) timeLeft = 300;
       $('#e-timerbox', body).classList.remove('up');
       btn.textContent = 'Pause';
@@ -2554,6 +2631,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
       btns.forEach((b, j) => { b.disabled = true; b.classList.add(j === strongSide ? 'correct' : 'dim'); });
       if (!ok) { btns[i].classList.remove('dim'); btns[i].classList.add('wrong'); shake(btns[i]); buzz('bad'); }
       if (ok) { score++; buzz('good'); addXP(5, btns[i]); }
+      logEvent('remix', { prompt: cur.p.id, ok });
       $('#r-explain', body).innerHTML = `<div class="card explain"><div class="verdict ${ok ? 'good' : 'bad'}">${ok ? 'Right.' : 'Not this time.'}</div>
         <p style="margin:0 0 6px">The stronger thesis takes a clear position that someone could disagree with, and it gives specific reasons that can each become a body paragraph. The weaker one only describes or restates the topic, so there is nothing to prove.</p>
         ${cur.t.points.length ? `<div class="kicker" style="margin-top:8px">Its reasons become these claims</div><ul class="small" style="margin:0">${cur.t.points.map(pt => `<li>${esc(pt.claim)}</li>`).join('')}</ul>` : ''}</div>`;
@@ -2562,6 +2640,7 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     function finish() {
       if (score === ROUNDS) celebrate();
       DEBUG.lastRemix = { score, total: ROUNDS };
+      logEvent('round', { game: 'remix', score, max: ROUNDS });
       body.innerHTML = `<div class="game"><div class="card result"><div class="kicker">Thesis remix</div><div class="score">${score}<small> / ${ROUNDS}</small></div>${score === ROUNDS ? '<div class="perfect">Sharp eye</div>' : ''}
         <p class="muted">Now write your own thesis for one of these prompts in the five-minute outline.</p>
         <div class="row" style="justify-content:center"><button class="btn primary" id="r-again" type="button">Play again <kbd>Enter</kbd></button><a class="btn" href="#/essay">Five-minute outline</a></div></div></div>`;
@@ -2649,16 +2728,168 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     const box = $('#search-results');
     if (!box) return;
     const res = searchAll(q);
+    if (q.trim()) logLater('search', 'search', { q: q.trim(), results: res.length }, 1200);
     if (!q.trim()) { box.innerHTML = '<div class="card empty">Type a name, year, or idea. Try "Vargas", "1964", or "inflation".</div>'; return; }
     if (!res.length) { box.innerHTML = `<div class="card empty">No matches for \u201c${esc(q)}\u201d.</div>`; return; }
     box.innerHTML = `<p class="small muted">${plural(res.length, 'result')}</p><div class="card results-card">${res.map(r => `<button class="result-row" type="button" data-open="${esc(r.id)}"><span class="badge chip-${r.type}" style="background:color-mix(in srgb, var(--cc) 15%, transparent);color:var(--text)">${esc(TYPE_LABEL[r.type])}</span><span><b>${highlight(r.name, q)}</b>${r.snip && r.snip !== r.name ? `<div class="snip">${highlight(r.snip, q)}</div>` : ''}</span></button>`).join('')}</div>`;
+  }
+
+  // ---------- history ----------
+  const LOG_GROUPS = {
+    all: ['All activity', null],
+    cards: ['Flashcards', ['grade', 'flip', 'cards_keep_going']],
+    games: ['Games', ['quiz', 'quote', 'match', 'year', 'order', 'order_swap', 'remix', 'round']],
+    views: ['Reading and browsing', ['view', 'timeline_expand', 'timeline_select', 'search']],
+    essay: ['Essay gym', ['essay_edit', 'essay_evidence', 'essay_compare', 'essay_prompt', 'essay_timer']],
+    other: ['Navigation and settings', ['nav', 'setting', 'plan_start', 'plan_stop', 'plan_step', 'reset', 'restore', 'history_cleared']]
+  };
+  const dayOf = t => { const d = new Date(t); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+  const timeOf = t => { const d = new Date(t); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+  function logOk(e) {
+    if (e.a === 'quiz' || e.a === 'quote' || e.a === 'match' || e.a === 'remix') return !!e.ok;
+    if (e.a === 'year') return e.diff <= 2;
+    if (e.a === 'grade') return e.g !== 'again';
+    return null;
+  }
+  function describeLog(e) {
+    const n = id => (id && INDEX[id] ? esc(nameOf(id)) : esc(id || ''));
+    const res = ok => `<span class="hl-res ${ok ? 'good' : 'bad'}">${ok ? 'right' : 'wrong'}</span>`;
+    const games = { quiz: 'Who/What', quotes: 'Quote detective', match: 'Matching', year: 'Guess the year', remix: 'Thesis remix' };
+    const promptName = id => { const p = C.prompts.find(x => x.id === id); return p ? esc(truncate(p.prompt, 60)) : esc(id || ''); };
+    switch (e.a) {
+      case 'grade': return `<span class="hl-res ${e.g === 'again' ? 'bad' : 'good'}">${esc(e.g)}</span> Card: ${n(e.id)} <span class="muted">(box ${e.from} to ${e.to}, ${esc(e.how || '')})</span>`;
+      case 'flip': return `Flipped card to the ${esc(e.side)}: ${n(e.id)}`;
+      case 'cards_keep_going': return 'Kept reviewing cards, weakest first';
+      case 'quiz': return `${res(e.ok)} Who/What: ${n(e.id)}${e.ok ? '' : ` <span class="muted">(you picked ${esc(e.pick)})</span>`}`;
+      case 'quote': return `${res(e.ok)} Quote detective: ${n(e.id)}${e.ok ? '' : ` <span class="muted">(you picked ${esc(e.pick)})</span>`}`;
+      case 'match': return `${res(e.ok)} Matching: ${n(e.id)}${e.ok ? '' : ` <span class="muted">(paired with ${n(e.picked)})</span>`}`;
+      case 'year': return `${res(e.diff <= 2)} Guess the year: ${n(e.id)} <span class="muted">(guessed ${esc(e.guess)}, answer ${esc(e.ans)})</span>`;
+      case 'order': return `${res(e.right === e.total)} Put it in order: ${e.right} of ${e.total} in place`;
+      case 'order_swap': return `Swapped ${n(e.a2)} and ${n(e.b)} in Put it in order`;
+      case 'remix': return `${res(e.ok)} Thesis remix: ${promptName(e.prompt)}`;
+      case 'round': return `Finished a round of ${esc(games[e.game] || e.game)}: ${e.ms ? (e.ms / 1000).toFixed(1) + 's' : esc(e.score) + ' / ' + esc(e.max)}${e.misses ? `, ${e.misses} ${e.misses === 1 ? 'miss' : 'misses'}` : ''}`;
+      case 'view': return `Opened ${n(e.id)}`;
+      case 'timeline_expand': return `${e.open ? 'Expanded' : 'Collapsed'} on the timeline: ${n(e.id)}`;
+      case 'timeline_select': return `Selected on the timeline: ${n(e.id)}`;
+      case 'search': return `Searched for \u201c${esc(e.q)}\u201d`;
+      case 'essay_edit': return `Edited ${esc(e.field)} for: ${promptName(e.prompt)}`;
+      case 'essay_evidence': return `${e.on ? 'Added' : 'Removed'} evidence ${n(e.id)} (claim ${esc(e.claim)})`;
+      case 'essay_compare': return `Compared outline with study notes: ${promptName(e.prompt)}`;
+      case 'essay_prompt': return `Chose essay prompt: ${promptName(e.prompt)}`;
+      case 'essay_timer': return `Essay timer ${esc(e.action)}`;
+      case 'nav': { const nm = str(e.to).replace(/^#\/?/, '').split(/[/?]/)[0] || 'home'; const hit = NAV.find(x => x[0] === nm); return `Went to ${esc(hit ? hit[1] : nm)}${/\/(order|year|remix)/.test(e.to) ? ' (' + esc(e.to.match(/\/(order|year|remix)/)[1]) + ')' : ''}`; }
+      case 'setting': return `Changed ${esc(e.name)} to ${esc(e.value)}`;
+      case 'plan_start': return "Started today's 15 minutes";
+      case 'plan_stop': return "Stopped today's 15 minutes";
+      case 'plan_step': return `Finished plan step: ${esc(e.step)}`;
+      case 'reset': return 'Reset progress (history kept)';
+      case 'restore': return 'Restored progress from a backup file';
+      case 'history_cleared': return 'Cleared the activity history';
+      default: return esc(e.a);
+    }
+  }
+  function downloadBackup() {
+    const blob = new Blob([JSON.stringify(Object.assign({ backupOf: KEY, savedAt: new Date().toISOString() }, S))], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'brazil-study-backup-' + dayOf(Date.now()) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    logEvent('setting', { name: 'backup_downloaded', value: S.log.length + ' entries' });
+  }
+  function restoreBackup(file, done) {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const d = JSON.parse(r.result);
+        if (!d || typeof d !== 'object' || !d.cards || !d.items) throw new Error('not a backup');
+        if (!window.confirm('Replace the progress on this device with the backup from ' + (d.savedAt ? d.savedAt.slice(0, 10) : 'that file') + '?')) return;
+        delete d.backupOf; delete d.savedAt;
+        localStorage.setItem(KEY, JSON.stringify(d));
+        S = loadState();
+        logEvent('restore');
+        applyTheme(); updateHud();
+        toast('Backup restored');
+        done();
+      } catch (e) { toast('That file is not a study backup'); }
+    };
+    r.readAsText(file);
+  }
+  function renderHistory(root, rest, params) {
+    const L = S.log;
+    const group = LOG_GROUPS[params.get('f')] ? params.get('f') : 'all';
+    const shown = +params.get('n') || 200;
+    const graded = L.filter(e => e.a === 'grade');
+    const answers = L.filter(e => ['quiz', 'quote', 'match', 'year', 'remix'].includes(e.a));
+    const right = answers.filter(e => logOk(e)).length;
+    const days = {};
+    L.forEach(e => {
+      const k = dayOf(e.t), d = days[k] = days[k] || { n: 0, cards: 0, again: 0, right: 0, wrong: 0, first: e.t, last: e.t };
+      d.n++; d.last = e.t;
+      if (e.a === 'grade') { d.cards++; if (e.g === 'again') d.again++; }
+      const ok = e.a === 'grade' ? null : logOk(e);
+      if (ok === true) d.right++; else if (ok === false) d.wrong++;
+    });
+    const dayRows = Object.keys(days).sort().reverse();
+    const weak = Object.keys(INDEX).map(id => {
+      const it = S.items[id] || {}, cardAgain = arr(CARDS_BY_REF[id]).reduce((a, cid) => a + ((S.cards[cid] && S.cards[cid].again) || 0), 0);
+      return { id, miss: (it.w || 0) + cardAgain, hit: it.c || 0 };
+    }).filter(x => x.miss > 0).sort((a, b) => b.miss - a.miss || a.hit - b.hit).slice(0, 15);
+    const cardRows = C.flashcards.filter(fc => S.cards[fc.id]).map(fc => ({ fc, st: S.cards[fc.id] }))
+      .sort((a, b) => (b.st.again || 0) - (a.st.again || 0) || (a.st.box || 0) - (b.st.box || 0));
+    const filt = LOG_GROUPS[group][1];
+    const matching = L.filter(e => !filt || filt.includes(e.a));
+    const feed = matching.slice(-shown).reverse();
+    let lastDay = '';
+    const kb = Math.round((JSON.stringify(S).length * 2) / 1024);
+    const since = L.length ? dayOf(L[0].t) : null;
+    root.innerHTML = `<h1>Your history</h1>
+      <p class="sub">Every card grade, game answer, item you open, and essay edit is saved on this device the moment you do it.</p>
+      <div class="card stack">
+        <div class="hist-metrics">
+          <div><b>${L.length}</b><span>actions saved${since ? ' since ' + esc(since) : ''}</span></div>
+          <div><b>${graded.length}</b><span>card grades (${graded.filter(e => e.g === 'again').length} again, ${graded.filter(e => e.g === 'good').length} good, ${graded.filter(e => e.g === 'easy').length} easy)</span></div>
+          <div><b>${right}/${answers.length}</b><span>game answers right</span></div>
+          <div><b>${dayRows.length}</b><span>${dayRows.length === 1 ? 'day' : 'days'} studied</span></div>
+        </div>
+        <p class="small muted" style="margin:0">Saved on this device only (about ${kb} KB). ${storagePersisted === true ? 'The browser has agreed to keep this data permanently.' : storagePersisted === false ? 'The browser may clear this data if the site goes unused for a while, so download a backup now and then.' : ''}${lastSaveOk ? '' : ' <b>Warning: the last save failed. Download a backup.</b>'}</p>
+        <div class="row">
+          <button class="btn primary sm" id="h-backup" type="button">Download backup</button>
+          <label class="btn sm" for="h-restore">Restore from backup</label><input id="h-restore" type="file" accept="application/json,.json" hidden>
+          <button class="btn danger sm" id="h-clear" type="button">Clear history</button>
+        </div>
+      </div>
+      ${weak.length ? `<h2>Needs work</h2><div class="card"><p class="small muted" style="margin:0 0 8px">Items you have missed most, counting game misses and "again" on their cards.</p><div class="chips">${weak.map(w => chip(w.id)).join('')}</div></div>` : ''}
+      <h2>By day</h2>
+      <div class="card">${dayRows.length ? dayRows.map(k => { const d = days[k]; return `<div class="conn-row small hist-day"><b>${esc(k)}</b> <span class="muted">${timeOf(d.first)}\u2013${timeOf(d.last)}</span> \u00b7 ${plural(d.n, 'action')} \u00b7 ${plural(d.cards, 'card')} graded (${d.again} again) \u00b7 ${d.right} right, ${d.wrong} wrong</div>`; }).join('') : '<p class="muted small" style="margin:0">Nothing yet. Every action you take will show up here.</p>'}</div>
+      <h2>Flashcard record</h2>
+      <details class="card" id="h-cards"><summary><b>${cardRows.length} of ${C.flashcards.length} cards reviewed</b> <span class="muted small">(tap to show every card)</span></summary>
+        <div class="hist-cards">${cardRows.map(({ fc, st }) => `<button type="button" class="result-row" data-open="${esc(fc.ref && INDEX[fc.ref] ? fc.ref : fc.id)}"><span><b>${esc(fc.front)}</b><div class="snip">again ${st.again || 0} \u00b7 good ${st.good || 0} \u00b7 easy ${st.easy || 0} \u00b7 box ${st.box || 0} of 5${st.last ? ' \u00b7 last ' + esc(dayOf(st.last)) + ' ' + timeOf(st.last) : ''}</div></span></button>`).join('') || '<p class="muted small">No cards reviewed yet.</p>'}</div></details>
+      <h2>Activity</h2>
+      <div class="seg hist-filter">${Object.keys(LOG_GROUPS).map(k => `<a href="#/history?f=${k}" class="${k === group ? 'on' : ''}">${esc(LOG_GROUPS[k][0])}</a>`).join('')}</div>
+      <div class="card hist-feed" id="h-feed">${feed.length ? feed.map(e => { const d = dayOf(e.t), head = d !== lastDay ? `<div class="kicker hist-dhead">${esc(d)}</div>` : ''; lastDay = d; return `${head}<div class="hist-row"><span class="hist-t">${timeOf(e.t)}</span><span>${describeLog(e)}</span></div>`; }).join('') : '<p class="muted small" style="margin:0">No activity of this kind yet.</p>'}
+      ${matching.length > shown ? `<div class="row" style="justify-content:center;margin-top:10px"><a class="btn sm" href="#/history?f=${group}&n=${shown + 300}">Show older</a></div>` : ''}</div>`;
+    $('#h-backup', root).addEventListener('click', downloadBackup);
+    $('#h-restore', root).addEventListener('change', e => { const file = e.target.files && e.target.files[0]; if (file) restoreBackup(file, route); e.target.value = ''; });
+    const btn = $('#h-clear', root);
+    let armed = false, t = null;
+    btn.addEventListener('click', () => {
+      if (!armed) { armed = true; btn.classList.add('armed'); btn.textContent = 'Tap again to clear'; t = setTimeout(() => { armed = false; btn.classList.remove('armed'); btn.textContent = 'Clear history'; }, 4000); return; }
+      clearTimeout(t);
+      S.log = [];
+      logEvent('history_cleared');
+      toast('History cleared. Your progress is unchanged.');
+      route();
+    });
+    page.cleanup = () => clearTimeout(t);
   }
 
   // ---------- init ----------
   const ROUTES = {
     home: renderHome, flashcards: renderFlashcards, timeline: renderTimeline, quiz: renderQuiz, match: renderMatch,
     quotes: renderQuotes, sources: renderSources, themes: renderThemes, essay: renderEssay, cram: renderCram, search: renderSearch,
-    games: renderGames, learn: renderLearn
+    games: renderGames, learn: renderLearn, history: renderHistory
   };
   function registerOffline() {
     // Manifests and service workers are only valid over http(s); on file:// they would log errors.
@@ -2679,13 +2910,18 @@ window.CONTENT = {"meta":{"generated":"2026-11-16","exam":"HIST 1475 final, in-c
     $('#bottomnav').innerHTML = BOTTOM.map(([k, label, href, ic]) => `<a href="${href}" data-bkey="${k}"><span class="bn-ic">${ICON[ic]}</span><span class="bn-l">${label}</span></a>`).join('');
     applyTheme();
     updateHud();
+    requestPersistence();
+    window.addEventListener('pagehide', save);
+    // Another tab saved: adopt its state so this tab never overwrites newer progress with a stale copy.
+    window.addEventListener('storage', e => { if (e.key === KEY || e.key === null) { S = loadState(); applyTheme(); updateHud(); } });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); });
     const banner = $('#banner');
     if (DATA_SOURCE === 'fixture.json') banner.innerHTML = '<div class="banner">Development fixture: everything shown is placeholder data, not real study content. Run build.py once content.json exists.</div>';
     else if (!Object.keys(INDEX).length) banner.innerHTML = '<div class="banner">No study data found. Run <code>python3 build.py</code> in the site folder to generate content.js.</div>';
     $('#theme-btn').addEventListener('click', () => {
       const cur = document.documentElement.getAttribute('data-theme');
       S.theme = cur === 'dark' ? 'light' : 'dark';
-      save();
+      logEvent('setting', { name: 'theme', value: S.theme });
       applyTheme();
       $$('[data-theme-set]').forEach(x => x.classList.toggle('on', x.dataset.themeSet === S.theme));
     });
